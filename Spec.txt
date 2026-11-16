@@ -1,0 +1,226 @@
+ESP32 Round LCD Clock — Specification v1.0
+
+1. Hardware
+Item	Specification
+Controller	ESP32 development board containing an ESP32-WROOM-32 module, preferably 4 MB flash
+Display	Waveshare 1.28-inch round LCD, 240×240, SPI, GC9A01 controller
+Power	Regulated USB 5 V supply, rated 1 A or greater, connected to the development board
+Network	2.4 GHz Wi-Fi with internet access
+Optional control	One pushbutton for brightness and display options
+Optional backup timekeeping	DS3231 RTC with appropriate backup battery
+
+
+Waveshare identifies this display family as GC9A01-based. Confirm that the purchased module is the eight-pin, non-touch version shown in your photo. 
+
+This specification assumes a development board with USB, voltage regulation, and programming circuitry. A bare WROOM module additionally needs a regulated 3.3 V supply, programming interface, and boot/reset circuitry.
+
+Standard ESP32-WROOM boards generally have no PSRAM. The firmware must work without it.
+
+2. Wiring
+
+Use the following GPIO assignment on a conventional ESP32-WROOM development board:
+Display pin	ESP32 connection	Purpose
+VCC	3V3	Display power
+GND	GND	Common ground
+DIN	GPIO23	SPI MOSI
+CLK	GPIO18	SPI clock
+CS	GPIO27	Display chip select
+DC	GPIO26	Command/data selection
+RST	GPIO25	Display reset
+BL	3V3 initially	Backlight enabled
+
+
+No MISO connection is required.
+
+Use GPIO numbers, since development-board pin labels vary. Keep SPI wires short; begin at 20 MHz and qualify 40 MHz on the finished assembly.
+
+For adjustable brightness, connect BL to GPIO32 after confirming that the exact module revision provides a logic-level backlight control input. Otherwise use a suitable external transistor driver. Do not power an LED backlight directly from a GPIO.
+
+Optional button: GPIO33 to GND, using the internal pull-up and software debounce.
+
+3. Display appearance
+
+The accepted ghosted mockup is the visual reference:
+- Circular face filling the 240×240 display.
+- Mint LCD panels with dark green active digits.
+- Faint inactive segments behind every segmented readout.
+- Outer city and 24-hour rings.
+- Central analog dial.
+- Weather, calendar, UTC, and network indicators.
+- Dark dividers and restrained shading matching the mockup.
+The generated picture is a style reference. Production artwork must be rebuilt into a clean background and separate dynamic elements; its displayed example numbers must not remain embedded behind live values.
+
+All important text and graphics must fit inside the circular visible area, centered approximately at (119.5, 119.5). Allow a small margin for enclosure alignment.
+
+4. Screen functions
+Area	Function	Update
+Large lower digits	Local hours and minutes	Each minute
+Small seconds	Local seconds	Each second
+AM/PM indicator	Local time period; hidden in 24-hour mode	As needed
+Central analog dial	Local hour, minute, and second hands	Each second
+Temperature	Internet weather for configured location	Every 15 minutes
+Humidity	Internet relative humidity	Every 15 minutes
+Weather icon	Conditions from provider weather code	Every 15 minutes
+Sunrise/sunset	Configured location’s local times	On new weather data and local date change
+UTC panel	UTC hours and minutes	Each minute
+Date	Local month/day	At local midnight
+Weekday row	Highlight current weekday	At local midnight
+DY	Local day of year, 001–366	At local midnight
+WY	ISO week number, 01–53	At local midnight
+Wi-Fi icon	Connected/disconnected state	On state change
+Bottom small field	Year	At local midnight
+
+
+Original markings such as PB/WB and the striped emblem may remain decorative in version 1. Do not imply sensor functions that are absent.
+
+Outer ring: retain the reference’s city names and numeral ring as decorative artwork in version 1. Accurate world-time behavior would require separate city timezone rules, including daylight saving and fractional offsets.
+
+5. Ghosted seven-segment rendering
+
+Each digit consists of seven reusable polygon segments.
+
+Rendering sequence:
+1. Restore the digit’s background.
+2. Draw all seven segments in the inactive color.
+3. Draw the segments required for the current number in the active color.
+Starting colors, adjustable during hardware tuning:
+Element	Starting RGB color
+Mint panel	#8CEFD1
+Active segment	#062C24
+Inactive segment	#77CDB4
+Dark divider	#081B16
+
+
+Inactive segments should be approximately 10–18% darker than their local panel background. Apply the effect to numerical digits, leaving ordinary printed labels sharp.
+
+The main time digits should be approximately 22–26 pixels high. Small segmented readings should generally be 9–12 pixels high. Fine labels require individually tuned bitmap artwork.
+
+Temperature formatting must accommodate negative values and three-digit Fahrenheit readings. Missing values display dashes; values must never overwrite neighboring fields.
+
+6. Graphics and memory
+
+Recommended stack:
+- PlatformIO with the Arduino framework for ESP32.
+- TFT_eSPI configured for GC9A01 and the assigned pins.
+- Custom seven-segment renderer and small bitmap fonts.
+- ArduinoJson for filtered weather parsing.
+- Preferences/NVS for configuration.
+Rendering design:
+- Store the static face as an RGB565 asset in flash.
+- Render changing fields using small RGB565 sprites.
+- Restore each field’s background before redrawing.
+- Restore the complete central dial region before drawing new hands.
+- Update only changed regions.
+A complete RGB565 framebuffer requires 115,200 bytes. Avoid requiring two full-screen buffers on a WROOM board, especially while Wi-Fi and HTTPS are active.
+
+Only the display task may access the LCD driver. Network operations pass completed data to it through a queue or protected snapshot.
+
+7. Timekeeping
+- Maintain system time in UTC.
+- Synchronize using SNTP after connecting at startup.
+- Set the normal synchronization interval to 3,600 seconds.
+- Continue timekeeping locally between successful synchronizations.
+- Convert UTC to local time using a configurable timezone rule with daylight-saving support.
+- Derive all calendar fields from that same local-time conversion.
+Do not hard-code a fixed UTC offset for locations that observe daylight saving.
+
+Before the first valid synchronization, show --:-- with a small synchronization indicator. Do not display the compilation date as current time.
+
+If internet access fails after synchronization, continue displaying local time and indicate loss of synchronization unobtrusively. Drift will depend on the particular board and temperature.
+
+Without an external battery-backed RTC, time is not guaranteed after power loss. The optional DS3231 permits useful offline startup time.
+
+8. Weather service
+
+Use Open-Meteo as the initial provider, subject to its current usage terms. Its API provides the needed temperature, humidity, weather-code, sunrise, and sunset fields. 
+
+Configuration:
+- Latitude and longitude.
+- Celsius or Fahrenheit.
+- Local timezone rules.
+- Refresh interval, default 15 minutes.
+Example request structure:
+https://api.open-meteo.com/v1/forecast
+ ?latitude=<LAT>
+ &longitude=<LON>
+ &current=temperature_2m,relative_humidity_2m,weather_code,is_day
+ &daily=sunrise,sunset
+ &temperature_unit=fahrenheit
+ &timeformat=unixtime
+ &timezone=auto
+ &forecast_days=2
+The actual URL contains no spaces or line breaks. Convert returned epoch timestamps with the clock’s configured local-time rules.
+
+Requirements:
+- Validate HTTPS certificates.
+- Obtain valid time before the first HTTPS weather request.
+- Use bounded request timeouts and response sizes.
+- Parse only required fields.
+- Retain the last successful weather snapshot during failures.
+- Mark weather stale after 60 minutes without a successful refresh.
+- Retry failures with backoff, capped at 15 minutes.
+- Handle missing sunrise/sunset, including polar conditions, with dashes.
+These readings represent outdoor weather at the configured location, not conditions inside the enclosure.
+
+9. Firmware behavior
+
+Use two logical tasks:
+Task	Responsibility
+Display/time task	Read system time, calculate field changes, render the face
+Network task	Wi-Fi reconnection, weather requests, publish weather snapshots
+
+
+SNTP runs through the ESP32 networking facilities.
+
+Network requests must not interrupt the second-by-second clock display. Schedule retries using monotonic elapsed time so an NTP correction cannot disrupt them.
+
+Save user settings when changed. Do not write seconds, weather samples, or animation state to flash continuously.
+
+Suggested source organization:
+src/
+  main.cpp
+  display.cpp
+  segments.cpp
+  time_service.cpp
+  weather_service.cpp
+  settings.cpp
+include/
+  board_config.h
+  settings.h
+  weather_data.h
+assets/
+  face_background
+  fonts
+  weather_icons
+10. Configuration and controls
+
+Version 1 can use a local configuration file before flashing. Store credentials outside committed source files.
+
+Required settings:
+Wi-Fi SSID and password
+Latitude and longitude
+Local timezone rule
+Temperature unit
+12/24-hour format
+Display rotation
+Brightness, if hardware supports it
+Weather refresh interval
+Optional button behavior:
+- Short press: cycle brightness.
+- Long press: toggle 12/24-hour display.
+A phone-accessible setup portal can be a later enhancement.
+
+11. Acceptance criteria
+
+The build is ready when:
+- It boots reliably with the display connected.
+- Orientation, RGB color order, and circular alignment are correct.
+- Live digits and faint inactive segments remain legible on the physical screen.
+- No baked-in sample digits show behind changing values.
+- Seconds continue advancing during weather requests and Wi-Fi outages.
+- NTP synchronization occurs at startup and approximately hourly.
+- Midnight, leap day, ISO week boundaries, and daylight-saving transitions behave correctly.
+- Missing/stale weather and negative temperatures display without overlap.
+- Repeated HTTPS requests do not cause declining free heap or resets during a 24-hour run.
+- Power restoration follows the specified behavior with or without the optional RTC.
+Recommended first build: USB-powered ESP32-WROOM development board, fixed-brightness display, one-second analog updates, hourly NTP, and weather every 15 minutes. That provides the approved appearance within the WROOM’s capabilities.
